@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Тест Мессенджера</title>
+    <meta charset="UTF-8">
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        .message-container { 
+            border: 1px solid #ccc; 
+            padding: 10px; 
+            margin: 10px 0; 
+            max-height: 400px; 
+            overflow-y: auto; 
+        }
+        .message { 
+            margin: 5px 0;
+            padding: 10px;
+            border-radius: 5px;
+            background: #e9ecef;
+        }
+        .message.sent { 
+            background: #007bff; 
+            color: white;
+            margin-left: 20%;
+        }
+        .message.received { 
+            background: #e9ecef;
+            margin-right: 20%;
+        }
+        .status { 
+            font-size: 12px;
+            color: #666;
+        }
+        .typing { 
+            font-style: italic;
+            color: #666;
+            margin: 5px 0;
+        }
+    </style>
+</head>
+<body>
+    <h2>Тест Мессенджера</h2>
+    
+    <!-- Форма авторизации -->
+    <div id="auth-form">
+        <h3>Авторизация</h3>
+        <input type="text" id="username" placeholder="Имя пользователя">
+        <input type="password" id="password" placeholder="Пароль">
+        <button onclick="login()">Войти</button>
+        <button onclick="register()">Зарегистрироваться</button>
+    </div>
+
+    <!-- Чат -->
+    <div id="chat-container" style="display: none;">
+        <div>
+            <select id="receiver"></select>
+            <button onclick="loadUsers()">Обновить список пользователей</button>
+        </div>
+        
+        <div class="message-container" id="messages"></div>
+        
+        <div class="typing" id="typing-status"></div>
+        
+        <div>
+            <input type="text" id="message-text" placeholder="Введите сообщение">
+            <button onclick="sendMessage()">Отправить</button>
+            <input type="file" id="file-input">
+            <button onclick="sendFile()">Отправить файл</button>
+        </div>
+    </div>
+
+    <script src="https://cdn.socket.io/4.4.1/socket.io.min.js"></script>
+    <script>
+        let socket;
+        let token;
+        let typingTimeout;
+        const API_URL = 'http://localhost:5000';
+
+        // Авторизация
+        async function login() {
+            const username = document.getElementById('username').value;
+            const password = document.getElementById('password').value;
+
+            try {
+                const response = await fetch(`${API_URL}/api/users/login`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ username, password })
+                });
+
+                const data = await response.json();
+                if (data.token) {
+                    token = data.token;
+                    initializeSocket();
+                    showChat();
+                    loadUsers();
+                }
+            } catch (error) {
+                console.error('Ошибка авторизации:', error);
+                alert('Ошибка авторизации');
+            }
+        }
+
+        // Регистрация
+        async function register() {
+            const username = document.getElementById('username').value;
+            const password = document.getElementById('password').value;
+
+            try {
+                const response = await fetch(`${API_URL}/api/users/register`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ username, password })
+                });
+
+                const data = await response.json();
+                if (data.token) {
+                    token = data.token;
+                    initializeSocket();
+                    showChat();
+                    loadUsers();
+                }
+            } catch (error) {
+                console.error('Ошибка регистрации:', error);
+                alert('Ошибка регистрации');
+            }
+        }
+
+        // Загрузка списка пользователей
+        async function loadUsers() {
+            try {
+                const response = await fetch(`${API_URL}/api/users`, {
+                    headers: { 'Authorization': `Bearer ${token}` }
+                });
+                const users = await response.json();
+                
+                const select = document.getElementById('receiver');
+                select.innerHTML = '';
+                users.forEach(user => {
+                    const option = document.createElement('option');
+                    option.value = user._id;
+                    option.textContent = user.username;
+                    select.appendChild(option);
+                });
+
+                // Загружаем историю сообщений для выбранного пользователя
+                loadMessages();
+            } catch (error) {
+                console.error('Ошибка загрузки пользователей:', error);
+            }
+        }
+
+        // Загрузка истории сообщений
+        async function loadMessages() {
+            const receiverId = document.getElementById('receiver').value;
+            if (!receiverId) return;
+
+            try {
+                const response = await fetch(`${API_URL}/api/messages/chat/${receiverId}`, {
+                    headers: { 'Authorization': `Bearer ${token}` }
+                });
+                const data = await response.json();
+                
+                const messagesContainer = document.getElementById('messages');
+                messagesContainer.innerHTML = '';
+                
+                data.messages.forEach(message => {
+                    displayMessage(message);
+                });
+                
+                messagesContainer.scrollTop = messagesContainer.scrollHeight;
+            } catch (error) {
+                console.error('Ошибка загрузки сообщений:', error);
+            }
+        }
+
+        // Отправка сообщения
+        async function sendMessage() {
+            const text = document.getElementById('message-text').value;
+            const receiver = document.getElementById('receiver').value;
+
+            if (!text || !receiver) return;
+
+            try {
+                const response = await fetch(`${API_URL}/api/messages`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${token}`
+                    },
+                    body: JSON.stringify({
+                        receiver,
+                        type: 'text',
+                        content: text
+                    })
+                });
+
+                const message = await response.json();
+                document.getElementById('message-text').value = '';
+                displayMessage(message);
+            } catch (error) {
+                console.error('Ошибка отправки сообщения:', error);
+                alert('Ошибка отправки сообщения');
+            }
+        }
+
+        // Отправка файла
+        async function sendFile() {
+            const fileInput = document.getElementById('file-input');
+            const receiver = document.getElementById('receiver').value;
+
+            if (!fileInput.files[0] || !receiver) return;
+
+            const formData = new FormData();
+            formData.append('file', fileInput.files[0]);
+            formData.append('receiver', receiver);
+
+            try {
+                const response = await fetch(`${API_URL}/api/messages/file`, {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${token}`
+                    },
+                    body: formData
+                });
+
+                const message = await response.json();
+                fileInput.value = '';
+                displayMessage(message);
+            } catch (error) {
+                console.error('Ошибка отправки файла:', error);
+                alert('Ошибка отправки файла');
+            }
+        }
+
+        // Отображение сообщения
+        function displayMessage(message) {
+            const messagesContainer = document.getElementById('messages');
+            const messageDiv = document.createElement('div');
+            messageDiv.className = `message ${message.sender === getUserId() ? 'sent' : 'received'}`;
+            
+            let content = '';
+            switch (message.type) {
+                case 'text':
+                    content = message.content.text;
+                    break;
+                case 'image':
+                    content = `<img src="${message.content.fileUrl}" style="max-width: 200px;">`;
+                    break;
+                case 'file':
+                    content = `<a href="${message.content.fileUrl}" target="_blank">${message.content.fileName}</a>`;
+                    break;
+                default:
+                    content = 'Неподдерживаемый тип сообщения';
+            }
+
+            messageDiv.innerHTML = `
+                <div>${content}</div>
+                <div class="status">
+                    ${message.status.delivered ? '✓' : ''}
+                    ${message.status.read ? '✓✓' : ''}
+                    ${new Date(message.createdAt).toLocaleTimeString()}
+                </div>
+            `;
+
+            messagesContainer.appendChild(messageDiv);
+            messagesContainer.scrollTop = messagesContainer.scrollHeight;
+        }
+
+        // Инициализация WebSocket
+        function initializeSocket() {
+            socket = io(API_URL, {
+                auth: { token }
+            });
+
+            socket.on('connect', () => {
+                console.log('WebSocket подключен');
+            });
+
+            socket.on('new_message', (message) => {
+                displayMessage(message);
+            });
+
+            socket.on('typing', ({ sender, isTyping }) => {
+                const typingStatus = document.getElementById('typing-status');
+                if (isTyping) {
+                    typingStatus.textContent = `${sender} печатает...`;
+                } else {
+                    typingStatus.textContent = '';
+                }
+            });
+
+            socket.on('message_status', ({ messageId, status }) => {
+                // Обновление статуса сообщения
+                const messageDiv = document.querySelector(`[data-message-id="${messageId}"]`);
+                if (messageDiv) {
+                    const statusDiv = messageDiv.querySelector('.status');
+                    if (status.delivered) statusDiv.textContent += '✓';
+                    if (status.read) statusDiv.textContent += '✓';
+                }
+            });
+        }
+
+        // Получение ID пользователя из токена
+        function getUserId() {
+            if (!token) return null;
+            const base64Url = token.split('.')[1];
+            const base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
+            const jsonPayload = decodeURIComponent(atob(base64).split('').map(c => {
+                return '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2);
+            }).join(''));
+            return JSON.parse(jsonPayload).id;
+        }
+
+        // Показать чат
+        function showChat() {
+            document.getElementById('auth-form').style.display = 'none';
+            document.getElementById('chat-container').style.display = 'block';
+        }
+
+        // Обработка ввода текста (статус печати)
+        document.getElementById('message-text').addEventListener('input', () => {
+            clearTimeout(typingTimeout);
+            socket.emit('typing', { receiver: document.getElementById('receiver').value, isTyping: true });
+            
+            typingTimeout = setTimeout(() => {
+                socket.emit('typing', { receiver: document.getElementById('receiver').value, isTyping: false });
+            }, 2000);
+        });
+    </script>
+</body>
+</html>

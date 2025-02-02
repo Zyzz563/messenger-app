@@ -1,0 +1,27 @@
+services:
+  - type: web
+    name: messenger-backend
+    env: node
+    buildCommand: cd server && npm install
+    startCommand: cd server && npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 5002
+      - key: MONGODB_URI
+        sync: false
+      - key: JWT_SECRET
+        sync: false
+
+  - type: web
+    name: messenger-frontend
+    env: node
+    buildCommand: cd frontend && npm install && npm run build
+    startCommand: cd frontend && npm run preview
+    envVars:
+      - key: VITE_API_URL
+        fromService:
+          name: messenger-backend
+          type: web
+          property: host
